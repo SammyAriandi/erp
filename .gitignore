@@ -1,9 +1,29 @@
-node_modules
-dist
-.next
+# dependencies
+node_modules/
+**/node_modules/
+
+# build output
+dist/
+**/dist/
+.next/
+**/.next/
+out/
+
+# env files (keep example)
 .env
-.env.*.local
-.DS_Store
+.env.*
+!.env.example
 
 # logs
 *.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# optional caches
+.turbo/
+coverage/
