@@ -8,12 +8,14 @@ datasource db {
 }
 
 model Tenant {
-  id        String   @id @default(uuid())
-  code      String   @unique
-  name      String
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  coaVersion  String? // e.g. "ID_V1"
+
 
   users User[]
   roles Role[]
@@ -133,12 +135,16 @@ model JournalEntry {
   status      JournalStatus @default(DRAFT)
   postedAt    DateTime?
   postedById  String?
+  sourceType  String?  // e.g. "SALES_INVOICE"
+  sourceId    String?  // e.g. invoiceId (UUID)
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
   lines JournalLine[]
 
   @@index([tenantId, status, postingDate])
+  @@unique([tenantId, sourceType, sourceId])
+
 }
 
 model JournalLine {

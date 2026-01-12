@@ -35,4 +35,11 @@ export class AccountingController {
   post(@CurrentUser() me: CurrentUserType, @Param('id') id: string) {
     return this.svc.postJournal(me.tenantId, me.userId, id);
   }
+  
+  @Post('coa/bootstrap')
+  @Permissions('accounting.coa.manage')
+  bootstrap(@CurrentUser() me: CurrentUserType) {
+    return this.svc.bootstrapCoaIdV1(me.tenantId);
+  }
+
 }

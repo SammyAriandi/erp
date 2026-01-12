@@ -1,10 +1,16 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
+import { COA_ID_V1 } from './coa.id';
+import { PostingEngine } from './posting.engine';
 
 @Injectable()
 export class AccountingService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly engine: PostingEngine;
+
+  constructor(private readonly prisma: PrismaService) {
+    this.engine = new PostingEngine(prisma);
+  }
 
   async createAccount(tenantId: string, input: { code: string; name: string; type: any; parentId?: string }) {
     const code = input.code.trim();
@@ -93,5 +99,49 @@ export class AccountingService {
       },
       include: { lines: true },
     });
+  }
+  async bootstrapCoaIdV1(tenantId: string) {
+    // Already bootstrapped?
+    const tenant = await this.prisma.tenant.findFirst({ where: { id: tenantId } });
+    if (!tenant) throw new BadRequestException('Tenant not found');
+    if (tenant.coaVersion === 'ID_V1') {
+      return { ok: true, msg: 'COA already bootstrapped', version: 'ID_V1' };
+    }
+
+    // Build map for parent resolution
+    const codeToId = new Map<string, string>();
+
+    // Create in order (parent first)
+    for (const row of COA_ID_V1) {
+      const parentId = row.parentCode ? codeToId.get(row.parentCode) ?? null : null;
+
+      // Upsert by (tenantId, code) — safe re-run
+      const acc = await this.prisma.account.upsert({
+        where: { tenantId_code: { tenantId, code: row.code } },
+        update: {
+          name: row.name,
+          type: row.type as any,
+          parentId,
+          isActive: true,
+        },
+        create: {
+          tenantId,
+          code: row.code,
+          name: row.name,
+          type: row.type as any,
+          parentId,
+          isActive: true,
+        },
+      });
+
+      codeToId.set(row.code, acc.id);
+    }
+
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { coaVersion: 'ID_V1' },
+    });
+
+    return { ok: true, msg: 'COA bootstrapped', version: 'ID_V1' };
   }
 }
