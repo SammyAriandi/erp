@@ -162,4 +162,34 @@ model JournalLine {
 
   @@index([tenantId, journalId])
   @@index([tenantId, accountId])
+
 }
+
+model PeriodLock {
+  id          String   @id @default(uuid())
+  tenantId    String
+  module      String   @default("ACCOUNTING") // nanti bisa tambah INVENTORY, SALES, etc
+  lockUntil   DateTime // postingDate <= lockUntil => rejected
+  reason      String?
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, module])
+  @@index([tenantId, module, lockUntil])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  tenantId   String
+  actorId    String?
+  action     String   // e.g. "ACCOUNTING_LOCK_SET", "JOURNAL_POSTED"
+  entityType String?  // e.g. "JournalEntry"
+  entityId   String?  // uuid
+  meta       Json?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, action, createdAt])
+  @@index([tenantId, entityType, entityId])
+}
+

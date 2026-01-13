@@ -29,6 +29,16 @@ export class PostingEngine {
     if (isNaN(postingDate.getTime())) throw new BadRequestException('Invalid postingDate');
     if (!args.lines?.length) throw new BadRequestException('lines required');
 
+    const lock = await this.prisma.periodLock.findFirst({
+      where: { tenantId: args.tenantId, module: 'ACCOUNTING' },
+    });
+
+    if (lock && postingDate <= lock.lockUntil) {
+      throw new BadRequestException(
+        `Accounting period locked until ${lock.lockUntil.toISOString()}`,
+      );
+    }
+
     // idempotency: if already posted for this source, return it
     const existing = await this.prisma.journalEntry.findFirst({
       where: {

@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 import { COA_ID_V1 } from './coa.id';
 import { PostingEngine } from './posting.engine';
 
@@ -12,18 +12,32 @@ export class AccountingService {
     this.engine = new PostingEngine(prisma);
   }
 
-  async createAccount(tenantId: string, input: { code: string; name: string; type: any; parentId?: string }) {
+  // -------------------------
+  // Accounts (COA)
+  // -------------------------
+  async createAccount(
+    tenantId: string,
+    input: { code: string; name: string; type: any; parentId?: string },
+  ) {
     const code = input.code.trim();
     const name = input.name.trim();
     if (!code || !name) throw new BadRequestException('code and name are required');
 
     if (input.parentId) {
-      const parent = await this.prisma.account.findFirst({ where: { tenantId, id: input.parentId } });
+      const parent = await this.prisma.account.findFirst({
+        where: { tenantId, id: input.parentId },
+      });
       if (!parent) throw new BadRequestException('parentId not found');
     }
 
     return this.prisma.account.create({
-      data: { tenantId, code, name, type: input.type, parentId: input.parentId ?? null },
+      data: {
+        tenantId,
+        code,
+        name,
+        type: input.type,
+        parentId: input.parentId ?? null,
+      },
     });
   }
 
@@ -34,25 +48,36 @@ export class AccountingService {
     });
   }
 
-  async createJournalDraft(tenantId: string, userId: string, input: { postingDate: string; memo?: string; lines: any[] }) {
+  // -------------------------
+  // Journals (manual)
+  // -------------------------
+  async createJournalDraft(
+    tenantId: string,
+    userId: string,
+    input: { postingDate: string; memo?: string; lines: any[] },
+  ) {
     const postingDate = new Date(input.postingDate);
     if (isNaN(postingDate.getTime())) throw new BadRequestException('Invalid postingDate');
 
     if (!input.lines || input.lines.length === 0) throw new BadRequestException('lines required');
 
-    // Validate accounts belong to tenant, and normalize decimals
     const lineData: Prisma.JournalLineCreateManyJournalInput[] = [];
 
     for (const ln of input.lines) {
-      const account = await this.prisma.account.findFirst({ where: { tenantId, id: ln.accountId, isActive: true } });
+      const account = await this.prisma.account.findFirst({
+        where: { tenantId, id: ln.accountId, isActive: true },
+      });
       if (!account) throw new BadRequestException(`accountId not found: ${ln.accountId}`);
 
       const debit = new Prisma.Decimal(ln.debit ?? '0');
       const credit = new Prisma.Decimal(ln.credit ?? '0');
 
-      if (debit.isNegative() || credit.isNegative()) throw new BadRequestException('debit/credit cannot be negative');
-      if (!debit.isZero() && !credit.isZero()) throw new BadRequestException('line cannot have both debit and credit');
-      if (debit.isZero() && credit.isZero()) throw new BadRequestException('line must have debit or credit');
+      if (debit.isNegative() || credit.isNegative())
+        throw new BadRequestException('debit/credit cannot be negative');
+      if (!debit.isZero() && !credit.isZero())
+        throw new BadRequestException('line cannot have both debit and credit');
+      if (debit.isZero() && credit.isZero())
+        throw new BadRequestException('line must have debit or credit');
 
       lineData.push({
         tenantId,
@@ -69,7 +94,7 @@ export class AccountingService {
         postingDate,
         memo: input.memo ?? null,
         status: 'DRAFT',
-        lines: { create: lineData.map(l => ({ ...l })) },
+        lines: { create: lineData.map((l) => ({ ...l })) },
       },
       include: { lines: true },
     });
@@ -83,14 +108,28 @@ export class AccountingService {
     if (!journal) throw new NotFoundException('Journal not found');
     if (journal.status !== 'DRAFT') throw new BadRequestException('Only DRAFT can be posted');
 
+    // ✅ Period lock check (Accounting)
+    const lock = await this.prisma.periodLock.findFirst({
+      where: { tenantId, module: 'ACCOUNTING' },
+    });
+    if (lock && journal.postingDate <= lock.lockUntil) {
+      throw new BadRequestException(
+        `Accounting period locked until ${lock.lockUntil.toISOString()}`,
+      );
+    }
+
+    // ✅ Balance check
     const totalDebit = journal.lines.reduce((s, l) => s.plus(l.debit), new Prisma.Decimal(0));
     const totalCredit = journal.lines.reduce((s, l) => s.plus(l.credit), new Prisma.Decimal(0));
 
     if (!totalDebit.equals(totalCredit)) {
-      throw new BadRequestException(`Journal not balanced. debit=${totalDebit.toString()} credit=${totalCredit.toString()}`);
+      throw new BadRequestException(
+        `Journal not balanced. debit=${totalDebit.toString()} credit=${totalCredit.toString()}`,
+      );
     }
 
-    return this.prisma.journalEntry.update({
+    // ✅ Post journal
+    const posted = await this.prisma.journalEntry.update({
       where: { id: journalId },
       data: {
         status: 'POSTED',
@@ -99,23 +138,69 @@ export class AccountingService {
       },
       include: { lines: true },
     });
+
+    // ✅ Audit trail
+    await this.prisma.auditLog.create({
+      data: {
+        tenantId,
+        actorId: userId,
+        action: 'JOURNAL_POSTED',
+        entityType: 'JournalEntry',
+        entityId: posted.id,
+        meta: {
+          memo: posted.memo,
+          postingDate: posted.postingDate.toISOString(),
+          debit: totalDebit.toString(),
+          credit: totalCredit.toString(),
+          sourceType: (posted as any).sourceType ?? null,
+          sourceId: (posted as any).sourceId ?? null,
+        },
+      },
+    });
+
+    return posted;
   }
+
+  // -------------------------
+  // ✅ STEP 4.3C — Wrapper for Posting Engine (for Sales/Purchase/Inventory later)
+  // -------------------------
+  async postFromSource(
+    tenantId: string,
+    userId: string,
+    input: {
+      postingDate: string;
+      memo?: string;
+      sourceType: string;
+      sourceId: string;
+      lines: { accountId: string; debit?: string; credit?: string; description?: string }[];
+    },
+  ) {
+    return this.engine.postFromSource({
+      tenantId,
+      userId,
+      postingDate: input.postingDate,
+      memo: input.memo,
+      source: { sourceType: input.sourceType, sourceId: input.sourceId },
+      lines: input.lines,
+    });
+  }
+
+  // -------------------------
+  // ✅ STEP 4.2 — COA bootstrap (Indonesia V1)
+  // -------------------------
   async bootstrapCoaIdV1(tenantId: string) {
-    // Already bootstrapped?
     const tenant = await this.prisma.tenant.findFirst({ where: { id: tenantId } });
     if (!tenant) throw new BadRequestException('Tenant not found');
+
     if (tenant.coaVersion === 'ID_V1') {
       return { ok: true, msg: 'COA already bootstrapped', version: 'ID_V1' };
     }
 
-    // Build map for parent resolution
     const codeToId = new Map<string, string>();
 
-    // Create in order (parent first)
     for (const row of COA_ID_V1) {
       const parentId = row.parentCode ? codeToId.get(row.parentCode) ?? null : null;
 
-      // Upsert by (tenantId, code) — safe re-run
       const acc = await this.prisma.account.upsert({
         where: { tenantId_code: { tenantId, code: row.code } },
         update: {
@@ -142,6 +227,83 @@ export class AccountingService {
       data: { coaVersion: 'ID_V1' },
     });
 
+    await this.prisma.auditLog.create({
+      data: {
+        tenantId,
+        actorId: null,
+        action: 'ACCOUNTING_COA_BOOTSTRAPPED',
+        entityType: 'Tenant',
+        entityId: tenantId,
+        meta: { version: 'ID_V1' },
+      },
+    });
+
     return { ok: true, msg: 'COA bootstrapped', version: 'ID_V1' };
+  }
+
+  // -------------------------
+  // ✅ STEP 4.4 — Period Lock (Accounting)
+  // -------------------------
+  async getPeriodLock(tenantId: string) {
+    return this.prisma.periodLock.findFirst({
+      where: { tenantId, module: 'ACCOUNTING' },
+    });
+  }
+
+  async setPeriodLock(
+    tenantId: string,
+    actorId: string,
+    input: { lockUntil: string; reason?: string },
+  ) {
+    const lockUntil = new Date(input.lockUntil);
+    if (isNaN(lockUntil.getTime())) throw new BadRequestException('Invalid lockUntil');
+
+    const lock = await this.prisma.periodLock.upsert({
+      where: { tenantId_module: { tenantId, module: 'ACCOUNTING' } },
+      update: { lockUntil, reason: input.reason ?? null, createdById: actorId },
+      create: {
+        tenantId,
+        module: 'ACCOUNTING',
+        lockUntil,
+        reason: input.reason ?? null,
+        createdById: actorId,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        tenantId,
+        actorId,
+        action: 'ACCOUNTING_LOCK_SET',
+        entityType: 'PeriodLock',
+        entityId: lock.id,
+        meta: { lockUntil: lock.lockUntil.toISOString(), reason: lock.reason },
+      },
+    });
+
+    return { ok: true, lock };
+  }
+
+  async clearPeriodLock(tenantId: string, actorId: string) {
+    const lock = await this.prisma.periodLock.findFirst({
+      where: { tenantId, module: 'ACCOUNTING' },
+    });
+
+    if (!lock) return { ok: true, msg: 'No lock to clear' };
+
+    await this.prisma.periodLock.delete({ where: { id: lock.id } });
+
+    await this.prisma.auditLog.create({
+      data: {
+        tenantId,
+        actorId,
+        action: 'ACCOUNTING_LOCK_CLEARED',
+        entityType: 'PeriodLock',
+        entityId: lock.id,
+        meta: { lockUntil: lock.lockUntil.toISOString(), reason: lock.reason },
+      },
+    });
+
+    return { ok: true };
   }
 }
