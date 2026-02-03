@@ -180,16 +180,20 @@ model PeriodLock {
 }
 
 model AuditLog {
-  id         String   @id @default(uuid())
-  tenantId   String
-  actorId    String?
-  action     String   // e.g. "ACCOUNTING_LOCK_SET", "JOURNAL_POSTED"
-  entityType String?  // e.g. "JournalEntry"
-  entityId   String?  // uuid
-  meta       Json?
-  createdAt  DateTime @default(now())
+  id        String   @id @default(uuid())
+  tenantId  String
+  actorId   String?  // userId (nullable untuk sistem/seed)
+  action    String   // e.g. ACCOUNT.CREATE, JOURNAL.POST
+  entity    String   // e.g. Account, JournalEntry, PeriodLock
+  entityId  String?  // id target
+  summary   String?  // text ringkas
+  meta      Json?    // payload tambahan (before/after, request data, dll)
+  ip        String?  // opsional nanti (frontend / reverse proxy)
+  userAgent String?  // opsional nanti
+  createdAt DateTime @default(now())
 
-  @@index([tenantId, action, createdAt])
-  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, entity, entityId])
+  @@index([tenantId, actorId, createdAt])
 }
 

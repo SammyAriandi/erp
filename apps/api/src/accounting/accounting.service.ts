@@ -1,15 +1,63 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
 import { COA_ID_V1 } from './coa.id';
 import { PostingEngine } from './posting.engine';
+import { AuditService } from '../audit/audit.service';
+
+type AuditPayload = {
+  tenantId: string;
+  actorId?: string | null;
+  action: string;     // e.g. JOURNAL_POSTED
+  entity: string;     // e.g. Account, JournalEntry, PeriodLock
+  entityId?: string | null;
+  meta?: any;
+};
 
 @Injectable()
 export class AccountingService {
   private readonly engine: PostingEngine;
 
-  constructor(private readonly prisma: PrismaService) {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {
     this.engine = new PostingEngine(prisma);
+  }
+
+  /**
+   * Single point of audit logging.
+   * - Prefer AuditService.log() if exists
+   * - Fallback to prisma.auditLog.create() (compatible with your current schema)
+   *
+   * This makes audit "upgrade-safe" and keeps controller/service clean.
+   */
+  private async writeAudit(payload: AuditPayload) {
+    try {
+      // If your AuditService already has a `log()` method, use it.
+      const svc: any = this.audit as any;
+      if (svc && typeof svc.log === 'function') {
+        // We pass through your current structure so it stays compatible
+        return await svc.log(payload);
+      }
+
+      // Fallback (works with your existing prisma.auditLog fields)
+      return await this.prisma.auditLog.create({
+        data: {
+          tenantId: payload.tenantId,
+          actorId: payload.actorId ?? null,
+          action: payload.action,
+          entity: payload.entity,
+          entityId: payload.entityId ?? null,
+          meta: payload.meta ?? undefined,
+        },
+      });
+    } catch (e) {
+      // IMPORTANT: audit failure should not block business flow
+      // (optional: console.warn)
+      return null;
+    }
   }
 
   // -------------------------
@@ -18,6 +66,7 @@ export class AccountingService {
   async createAccount(
     tenantId: string,
     input: { code: string; name: string; type: any; parentId?: string },
+    actorId?: string | null, // optional (biar tidak merusak call lama)
   ) {
     const code = input.code.trim();
     const name = input.name.trim();
@@ -30,7 +79,7 @@ export class AccountingService {
       if (!parent) throw new BadRequestException('parentId not found');
     }
 
-    return this.prisma.account.create({
+    const created = await this.prisma.account.create({
       data: {
         tenantId,
         code,
@@ -39,6 +88,22 @@ export class AccountingService {
         parentId: input.parentId ?? null,
       },
     });
+
+    await this.writeAudit({
+      tenantId,
+      actorId: actorId ?? null,
+      action: 'ACCOUNT_CREATED',
+      entity: 'Account',
+      entityId: created.id,
+      meta: {
+        code: created.code,
+        name: created.name,
+        type: created.type,
+        parentId: created.parentId,
+      },
+    });
+
+    return created;
   }
 
   async listAccounts(tenantId: string) {
@@ -61,7 +126,13 @@ export class AccountingService {
 
     if (!input.lines || input.lines.length === 0) throw new BadRequestException('lines required');
 
-    const lineData: Prisma.JournalLineCreateManyJournalInput[] = [];
+    const lineData: Array<{
+      tenantId: string;
+      accountId: string;
+      debit: Decimal;
+      credit: Decimal;
+      description?: string | null;
+    }> = [];
 
     for (const ln of input.lines) {
       const account = await this.prisma.account.findFirst({
@@ -69,8 +140,8 @@ export class AccountingService {
       });
       if (!account) throw new BadRequestException(`accountId not found: ${ln.accountId}`);
 
-      const debit = new Prisma.Decimal(ln.debit ?? '0');
-      const credit = new Prisma.Decimal(ln.credit ?? '0');
+      const debit = new Decimal(ln.debit ?? '0');
+      const credit = new Decimal(ln.credit ?? '0');
 
       if (debit.isNegative() || credit.isNegative())
         throw new BadRequestException('debit/credit cannot be negative');
@@ -88,7 +159,7 @@ export class AccountingService {
       });
     }
 
-    return this.prisma.journalEntry.create({
+    const created = await this.prisma.journalEntry.create({
       data: {
         tenantId,
         postingDate,
@@ -98,6 +169,27 @@ export class AccountingService {
       },
       include: { lines: true },
     });
+
+    // Audit: draft created
+    await this.writeAudit({
+      tenantId,
+      actorId: userId,
+      action: 'JOURNAL_DRAFT_CREATED',
+      entity: 'JournalEntry',
+      entityId: created.id,
+      meta: {
+        memo: created.memo,
+        postingDate: created.postingDate.toISOString(),
+        lines: created.lines.map((l) => ({
+          accountId: l.accountId,
+          debit: l.debit?.toString?.() ?? String(l.debit),
+          credit: l.credit?.toString?.() ?? String(l.credit),
+          description: l.description,
+        })),
+      },
+    });
+
+    return created;
   }
 
   async postJournal(tenantId: string, userId: string, journalId: string) {
@@ -119,8 +211,8 @@ export class AccountingService {
     }
 
     // ✅ Balance check
-    const totalDebit = journal.lines.reduce((s, l) => s.plus(l.debit), new Prisma.Decimal(0));
-    const totalCredit = journal.lines.reduce((s, l) => s.plus(l.credit), new Prisma.Decimal(0));
+    const totalDebit = journal.lines.reduce((s, l) => s.plus(l.debit), new Decimal(0));
+    const totalCredit = journal.lines.reduce((s, l) => s.plus(l.credit), new Decimal(0));
 
     if (!totalDebit.equals(totalCredit)) {
       throw new BadRequestException(
@@ -140,21 +232,19 @@ export class AccountingService {
     });
 
     // ✅ Audit trail
-    await this.prisma.auditLog.create({
-      data: {
-        tenantId,
-        actorId: userId,
-        action: 'JOURNAL_POSTED',
-        entityType: 'JournalEntry',
-        entityId: posted.id,
-        meta: {
-          memo: posted.memo,
-          postingDate: posted.postingDate.toISOString(),
-          debit: totalDebit.toString(),
-          credit: totalCredit.toString(),
-          sourceType: (posted as any).sourceType ?? null,
-          sourceId: (posted as any).sourceId ?? null,
-        },
+    await this.writeAudit({
+      tenantId,
+      actorId: userId,
+      action: 'JOURNAL_POSTED',
+      entity: 'JournalEntry',
+      entityId: posted.id,
+      meta: {
+        memo: posted.memo,
+        postingDate: posted.postingDate.toISOString(),
+        debit: totalDebit.toString(),
+        credit: totalCredit.toString(),
+        sourceType: (posted as any).sourceType ?? null,
+        sourceId: (posted as any).sourceId ?? null,
       },
     });
 
@@ -162,7 +252,7 @@ export class AccountingService {
   }
 
   // -------------------------
-  // ✅ STEP 4.3C — Wrapper for Posting Engine (for Sales/Purchase/Inventory later)
+  // ✅ STEP 4.3C — Wrapper for Posting Engine (Sales/Purchase/Inventory later)
   // -------------------------
   async postFromSource(
     tenantId: string,
@@ -175,7 +265,7 @@ export class AccountingService {
       lines: { accountId: string; debit?: string; credit?: string; description?: string }[];
     },
   ) {
-    return this.engine.postFromSource({
+    const result = await this.engine.postFromSource({
       tenantId,
       userId,
       postingDate: input.postingDate,
@@ -183,12 +273,30 @@ export class AccountingService {
       source: { sourceType: input.sourceType, sourceId: input.sourceId },
       lines: input.lines,
     });
+
+    // Audit: engine created/returned posted journal (idempotent)
+    await this.writeAudit({
+      tenantId,
+      actorId: userId,
+      action: 'POSTING_ENGINE_POST_FROM_SOURCE',
+      entity: 'JournalEntry',
+      entityId: result?.id ?? null,
+      meta: {
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        postingDate: input.postingDate,
+        memo: input.memo ?? null,
+        status: result?.status ?? null,
+      },
+    });
+
+    return result;
   }
 
   // -------------------------
   // ✅ STEP 4.2 — COA bootstrap (Indonesia V1)
   // -------------------------
-  async bootstrapCoaIdV1(tenantId: string) {
+  async bootstrapCoaIdV1(tenantId: string, actorId?: string | null) {
     const tenant = await this.prisma.tenant.findFirst({ where: { id: tenantId } });
     if (!tenant) throw new BadRequestException('Tenant not found');
 
@@ -227,15 +335,13 @@ export class AccountingService {
       data: { coaVersion: 'ID_V1' },
     });
 
-    await this.prisma.auditLog.create({
-      data: {
-        tenantId,
-        actorId: null,
-        action: 'ACCOUNTING_COA_BOOTSTRAPPED',
-        entityType: 'Tenant',
-        entityId: tenantId,
-        meta: { version: 'ID_V1' },
-      },
+    await this.writeAudit({
+      tenantId,
+      actorId: actorId ?? null,
+      action: 'ACCOUNTING_COA_BOOTSTRAPPED',
+      entity: 'Tenant',
+      entityId: tenantId,
+      meta: { version: 'ID_V1' },
     });
 
     return { ok: true, msg: 'COA bootstrapped', version: 'ID_V1' };
@@ -270,15 +376,13 @@ export class AccountingService {
       },
     });
 
-    await this.prisma.auditLog.create({
-      data: {
-        tenantId,
-        actorId,
-        action: 'ACCOUNTING_LOCK_SET',
-        entityType: 'PeriodLock',
-        entityId: lock.id,
-        meta: { lockUntil: lock.lockUntil.toISOString(), reason: lock.reason },
-      },
+    await this.writeAudit({
+      tenantId,
+      actorId,
+      action: 'ACCOUNTING_LOCK_SET',
+      entity: 'PeriodLock',
+      entityId: lock.id,
+      meta: { lockUntil: lock.lockUntil.toISOString(), reason: lock.reason },
     });
 
     return { ok: true, lock };
@@ -293,15 +397,13 @@ export class AccountingService {
 
     await this.prisma.periodLock.delete({ where: { id: lock.id } });
 
-    await this.prisma.auditLog.create({
-      data: {
-        tenantId,
-        actorId,
-        action: 'ACCOUNTING_LOCK_CLEARED',
-        entityType: 'PeriodLock',
-        entityId: lock.id,
-        meta: { lockUntil: lock.lockUntil.toISOString(), reason: lock.reason },
-      },
+    await this.writeAudit({
+      tenantId,
+      actorId,
+      action: 'ACCOUNTING_LOCK_CLEARED',
+      entity: 'PeriodLock',
+      entityId: lock.id,
+      meta: { lockUntil: lock.lockUntil.toISOString(), reason: lock.reason },
     });
 
     return { ok: true };
