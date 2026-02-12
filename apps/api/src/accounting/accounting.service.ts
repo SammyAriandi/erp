@@ -408,4 +408,75 @@ export class AccountingService {
 
     return { ok: true };
   }
+
+  async trialBalance(
+  tenantId: string,
+  input: { from?: string; to?: string; postedOnly?: boolean },
+) {
+  const postedOnly = input.postedOnly ?? true;
+
+  // Filter untuk JournalEntry
+  const whereJournal: any = { tenantId };
+  if (postedOnly) whereJournal.status = 'POSTED';
+
+  if (input.from || input.to) {
+    whereJournal.postingDate = {};
+    if (input.from) whereJournal.postingDate.gte = new Date(input.from);
+    if (input.to) whereJournal.postingDate.lte = new Date(input.to);
+  }
+
+  // Group journal lines by accountId, tapi hanya yang journal-nya match filter
+  const grouped = await this.prisma.journalLine.groupBy({
+    by: ['accountId'],
+    where: {
+      tenantId,
+      journal: whereJournal, // relation filter: journalEntry
+    },
+    _sum: {
+      debit: true,
+      credit: true,
+    },
+  });
+
+  // Ambil metadata akun biar bisa tampil code/name/type
+  const accounts = await this.prisma.account.findMany({
+    where: { tenantId, isActive: true },
+    select: { id: true, code: true, name: true, type: true },
+  });
+
+  const accMap = new Map(accounts.map((a) => [a.id, a]));
+
+  const rows = grouped
+    .map((g) => {
+      const a = accMap.get(g.accountId);
+
+      const debit = Number(g._sum.debit ?? 0);
+      const credit = Number(g._sum.credit ?? 0);
+      const balance = debit - credit;
+
+      return {
+        accountId: g.accountId,
+        code: a?.code ?? '(unknown)',
+        name: a?.name ?? '(unknown)',
+        type: a?.type ?? null,
+        debit,
+        credit,
+        balance,
+      };
+    })
+    .sort((x, y) => (x.code > y.code ? 1 : -1));
+
+  const totalDebit = rows.reduce((s, r) => s + r.debit, 0);
+  const totalCredit = rows.reduce((s, r) => s + r.credit, 0);
+
+  return {
+    from: input.from ?? null,
+    to: input.to ?? null,
+    postedOnly,
+    totalDebit,
+    totalCredit,
+    rows,
+  };
+}
+
 }
