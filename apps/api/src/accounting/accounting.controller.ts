@@ -1,4 +1,13 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { AccountingService } from './accounting.service';
 import { JwtAuthGuard } from '../auth/jwt/jwt-auth.guard';
 import { PermissionsGuard } from '../auth/permissions.guard';
@@ -59,11 +68,7 @@ export class AccountingController {
   }
 
   // -------------------------
-  // ✅ STEP 4.4 — Period Lock (temporary permission for testing)
-  // NOTE:
-  //   Untuk sekarang pakai 'accounting.coa.manage' supaya OWNER bisa test.
-  //   Nanti kalau permission 'accounting.period.lock' sudah kamu seed & assign,
-  //   baru kita balikkan decorator ini ke 'accounting.period.lock'.
+  // Period Lock (sementara pakai accounting.coa.manage supaya OWNER bisa test)
   // -------------------------
   @Post('period-lock')
   @Permissions('accounting.coa.manage')
@@ -84,5 +89,23 @@ export class AccountingController {
   @Permissions('accounting.coa.manage')
   clearLock(@CurrentUser() me: CurrentUserType) {
     return this.svc.clearPeriodLock(me.tenantId, me.userId);
+  }
+
+  // -------------------------
+  // Trial Balance
+  // -------------------------
+  @Get('trial-balance')
+  @Permissions('accounting.read')
+  trialBalance(
+    @CurrentUser() me: CurrentUserType,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('postedOnly') postedOnly?: string,
+  ) {
+    return this.svc.trialBalance(me.tenantId, {
+      from,
+      to,
+      postedOnly: postedOnly === undefined ? true : postedOnly !== 'false',
+    });
   }
 }

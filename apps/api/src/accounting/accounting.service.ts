@@ -1,19 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
 import { COA_ID_V1 } from './coa.id';
 import { PostingEngine } from './posting.engine';
 import { AuditService } from '../audit/audit.service';
-
-type AuditPayload = {
-  tenantId: string;
-  actorId?: string | null;
-  action: string;     // e.g. JOURNAL_POSTED
-  entity: string;     // e.g. Account, JournalEntry, PeriodLock
-  entityId?: string | null;
-  meta?: any;
-};
 
 @Injectable()
 export class AccountingService {
@@ -26,47 +16,12 @@ export class AccountingService {
     this.engine = new PostingEngine(prisma);
   }
 
-  /**
-   * Single point of audit logging.
-   * - Prefer AuditService.log() if exists
-   * - Fallback to prisma.auditLog.create() (compatible with your current schema)
-   *
-   * This makes audit "upgrade-safe" and keeps controller/service clean.
-   */
-  private async writeAudit(payload: AuditPayload) {
-    try {
-      // If your AuditService already has a `log()` method, use it.
-      const svc: any = this.audit as any;
-      if (svc && typeof svc.log === 'function') {
-        // We pass through your current structure so it stays compatible
-        return await svc.log(payload);
-      }
-
-      // Fallback (works with your existing prisma.auditLog fields)
-      return await this.prisma.auditLog.create({
-        data: {
-          tenantId: payload.tenantId,
-          actorId: payload.actorId ?? null,
-          action: payload.action,
-          entity: payload.entity,
-          entityId: payload.entityId ?? null,
-          meta: payload.meta ?? undefined,
-        },
-      });
-    } catch (e) {
-      // IMPORTANT: audit failure should not block business flow
-      // (optional: console.warn)
-      return null;
-    }
-  }
-
   // -------------------------
   // Accounts (COA)
   // -------------------------
   async createAccount(
     tenantId: string,
     input: { code: string; name: string; type: any; parentId?: string },
-    actorId?: string | null, // optional (biar tidak merusak call lama)
   ) {
     const code = input.code.trim();
     const name = input.name.trim();
@@ -79,7 +34,7 @@ export class AccountingService {
       if (!parent) throw new BadRequestException('parentId not found');
     }
 
-    const created = await this.prisma.account.create({
+    return this.prisma.account.create({
       data: {
         tenantId,
         code,
@@ -88,22 +43,6 @@ export class AccountingService {
         parentId: input.parentId ?? null,
       },
     });
-
-    await this.writeAudit({
-      tenantId,
-      actorId: actorId ?? null,
-      action: 'ACCOUNT_CREATED',
-      entity: 'Account',
-      entityId: created.id,
-      meta: {
-        code: created.code,
-        name: created.name,
-        type: created.type,
-        parentId: created.parentId,
-      },
-    });
-
-    return created;
   }
 
   async listAccounts(tenantId: string) {
@@ -124,7 +63,9 @@ export class AccountingService {
     const postingDate = new Date(input.postingDate);
     if (isNaN(postingDate.getTime())) throw new BadRequestException('Invalid postingDate');
 
-    if (!input.lines || input.lines.length === 0) throw new BadRequestException('lines required');
+    if (!input.lines || input.lines.length === 0) {
+      throw new BadRequestException('lines required');
+    }
 
     const lineData: Array<{
       tenantId: string;
@@ -143,12 +84,15 @@ export class AccountingService {
       const debit = new Decimal(ln.debit ?? '0');
       const credit = new Decimal(ln.credit ?? '0');
 
-      if (debit.isNegative() || credit.isNegative())
+      if (debit.isNegative() || credit.isNegative()) {
         throw new BadRequestException('debit/credit cannot be negative');
-      if (!debit.isZero() && !credit.isZero())
+      }
+      if (!debit.isZero() && !credit.isZero()) {
         throw new BadRequestException('line cannot have both debit and credit');
-      if (debit.isZero() && credit.isZero())
+      }
+      if (debit.isZero() && credit.isZero()) {
         throw new BadRequestException('line must have debit or credit');
+      }
 
       lineData.push({
         tenantId,
@@ -159,7 +103,7 @@ export class AccountingService {
       });
     }
 
-    const created = await this.prisma.journalEntry.create({
+    return this.prisma.journalEntry.create({
       data: {
         tenantId,
         postingDate,
@@ -169,27 +113,6 @@ export class AccountingService {
       },
       include: { lines: true },
     });
-
-    // Audit: draft created
-    await this.writeAudit({
-      tenantId,
-      actorId: userId,
-      action: 'JOURNAL_DRAFT_CREATED',
-      entity: 'JournalEntry',
-      entityId: created.id,
-      meta: {
-        memo: created.memo,
-        postingDate: created.postingDate.toISOString(),
-        lines: created.lines.map((l) => ({
-          accountId: l.accountId,
-          debit: l.debit?.toString?.() ?? String(l.debit),
-          credit: l.credit?.toString?.() ?? String(l.credit),
-          description: l.description,
-        })),
-      },
-    });
-
-    return created;
   }
 
   async postJournal(tenantId: string, userId: string, journalId: string) {
@@ -200,7 +123,7 @@ export class AccountingService {
     if (!journal) throw new NotFoundException('Journal not found');
     if (journal.status !== 'DRAFT') throw new BadRequestException('Only DRAFT can be posted');
 
-    // ✅ Period lock check (Accounting)
+    // ✅ Period lock check
     const lock = await this.prisma.periodLock.findFirst({
       where: { tenantId, module: 'ACCOUNTING' },
     });
@@ -231,8 +154,8 @@ export class AccountingService {
       include: { lines: true },
     });
 
-    // ✅ Audit trail
-    await this.writeAudit({
+    // ✅ Audit (pakai AuditService supaya schema audit aman dari perubahan)
+    await this.audit.log({
       tenantId,
       actorId: userId,
       action: 'JOURNAL_POSTED',
@@ -252,7 +175,7 @@ export class AccountingService {
   }
 
   // -------------------------
-  // ✅ STEP 4.3C — Wrapper for Posting Engine (Sales/Purchase/Inventory later)
+  // Posting Engine wrapper (auto posting from source)
   // -------------------------
   async postFromSource(
     tenantId: string,
@@ -265,7 +188,7 @@ export class AccountingService {
       lines: { accountId: string; debit?: string; credit?: string; description?: string }[];
     },
   ) {
-    const result = await this.engine.postFromSource({
+    return this.engine.postFromSource({
       tenantId,
       userId,
       postingDate: input.postingDate,
@@ -273,34 +196,16 @@ export class AccountingService {
       source: { sourceType: input.sourceType, sourceId: input.sourceId },
       lines: input.lines,
     });
-
-    // Audit: engine created/returned posted journal (idempotent)
-    await this.writeAudit({
-      tenantId,
-      actorId: userId,
-      action: 'POSTING_ENGINE_POST_FROM_SOURCE',
-      entity: 'JournalEntry',
-      entityId: result?.id ?? null,
-      meta: {
-        sourceType: input.sourceType,
-        sourceId: input.sourceId,
-        postingDate: input.postingDate,
-        memo: input.memo ?? null,
-        status: result?.status ?? null,
-      },
-    });
-
-    return result;
   }
 
   // -------------------------
-  // ✅ STEP 4.2 — COA bootstrap (Indonesia V1)
+  // COA bootstrap (Indonesia V1)
   // -------------------------
-  async bootstrapCoaIdV1(tenantId: string, actorId?: string | null) {
+  async bootstrapCoaIdV1(tenantId: string) {
     const tenant = await this.prisma.tenant.findFirst({ where: { id: tenantId } });
     if (!tenant) throw new BadRequestException('Tenant not found');
 
-    if (tenant.coaVersion === 'ID_V1') {
+    if ((tenant as any).coaVersion === 'ID_V1') {
       return { ok: true, msg: 'COA already bootstrapped', version: 'ID_V1' };
     }
 
@@ -332,12 +237,12 @@ export class AccountingService {
 
     await this.prisma.tenant.update({
       where: { id: tenantId },
-      data: { coaVersion: 'ID_V1' },
+      data: { coaVersion: 'ID_V1' as any },
     });
 
-    await this.writeAudit({
+    await this.audit.log({
       tenantId,
-      actorId: actorId ?? null,
+      actorId: null,
       action: 'ACCOUNTING_COA_BOOTSTRAPPED',
       entity: 'Tenant',
       entityId: tenantId,
@@ -348,7 +253,7 @@ export class AccountingService {
   }
 
   // -------------------------
-  // ✅ STEP 4.4 — Period Lock (Accounting)
+  // Period Lock (Accounting)
   // -------------------------
   async getPeriodLock(tenantId: string) {
     return this.prisma.periodLock.findFirst({
@@ -376,7 +281,7 @@ export class AccountingService {
       },
     });
 
-    await this.writeAudit({
+    await this.audit.log({
       tenantId,
       actorId,
       action: 'ACCOUNTING_LOCK_SET',
@@ -397,7 +302,7 @@ export class AccountingService {
 
     await this.prisma.periodLock.delete({ where: { id: lock.id } });
 
-    await this.writeAudit({
+    await this.audit.log({
       tenantId,
       actorId,
       action: 'ACCOUNTING_LOCK_CLEARED',
@@ -407,5 +312,76 @@ export class AccountingService {
     });
 
     return { ok: true };
+  }
+
+  // -------------------------
+  // ✅ STEP 4.6 — Trial Balance (real-time from posted journals)
+  // -------------------------
+  async trialBalance(
+    tenantId: string,
+    input: { from?: string; to?: string; postedOnly?: boolean },
+  ) {
+    const postedOnly = input.postedOnly ?? true;
+
+    const whereJournal: any = { tenantId };
+    if (postedOnly) whereJournal.status = 'POSTED';
+
+    if (input.from || input.to) {
+      whereJournal.postingDate = {};
+      if (input.from) whereJournal.postingDate.gte = new Date(input.from);
+      if (input.to) whereJournal.postingDate.lte = new Date(input.to);
+    }
+
+    // groupBy journal lines by accountId, filter by journal status + date
+    const grouped = await this.prisma.journalLine.groupBy({
+      by: ['accountId'],
+      where: {
+        tenantId,
+        journal: whereJournal,
+      },
+      _sum: {
+        debit: true,
+        credit: true,
+      },
+    });
+
+    const accounts = await this.prisma.account.findMany({
+      where: { tenantId, isActive: true },
+      select: { id: true, code: true, name: true, type: true },
+    });
+
+    const accMap = new Map(accounts.map((a) => [a.id, a]));
+
+    const rows = grouped
+      .map((g) => {
+        const a = accMap.get(g.accountId);
+
+        const debit = new Decimal((g._sum.debit ?? 0) as any);
+        const credit = new Decimal((g._sum.credit ?? 0) as any);
+        const balance = debit.minus(credit);
+
+        return {
+          accountId: g.accountId,
+          code: a?.code ?? '(unknown)',
+          name: a?.name ?? '(unknown)',
+          type: a?.type ?? null,
+          debit: debit.toString(),
+          credit: credit.toString(),
+          balance: balance.toString(),
+        };
+      })
+      .sort((x, y) => (x.code > y.code ? 1 : -1));
+
+    const totalDebit = rows.reduce((s, r) => s.plus(new Decimal(r.debit)), new Decimal(0));
+    const totalCredit = rows.reduce((s, r) => s.plus(new Decimal(r.credit)), new Decimal(0));
+
+    return {
+      from: input.from ?? null,
+      to: input.to ?? null,
+      postedOnly,
+      totalDebit: totalDebit.toString(),
+      totalCredit: totalCredit.toString(),
+      rows,
+    };
   }
 }

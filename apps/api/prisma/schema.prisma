@@ -197,3 +197,17 @@ model AuditLog {
   @@index([tenantId, actorId, createdAt])
 }
 
+model AccountBalanceSnapshot {
+  id          String   @id @default(uuid())
+  tenantId    String
+  asOfDate    DateTime // snapshot per tanggal (00:00:00Z / local normalized)
+  accountId   String
+  debitTotal  Decimal  @default(0)
+  creditTotal Decimal  @default(0)
+  balance     Decimal  @default(0)
+  createdAt   DateTime @default(now())
+
+  @@unique([tenantId, asOfDate, accountId])
+  @@index([tenantId, asOfDate])
+  @@index([tenantId, accountId])
+}
