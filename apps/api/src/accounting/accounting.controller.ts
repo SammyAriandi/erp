@@ -1,13 +1,4 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Post,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { AccountingService } from './accounting.service';
 import { JwtAuthGuard } from '../auth/jwt/jwt-auth.guard';
 import { PermissionsGuard } from '../auth/permissions.guard';
@@ -89,23 +80,5 @@ export class AccountingController {
   @Permissions('accounting.coa.manage')
   clearLock(@CurrentUser() me: CurrentUserType) {
     return this.svc.clearPeriodLock(me.tenantId, me.userId);
-  }
-
-  // -------------------------
-  // Trial Balance
-  // -------------------------
-  @Get('trial-balance')
-  @Permissions('accounting.read')
-  trialBalance(
-    @CurrentUser() me: CurrentUserType,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('postedOnly') postedOnly?: string,
-  ) {
-    return this.svc.trialBalance(me.tenantId, {
-      from,
-      to,
-      postedOnly: postedOnly === undefined ? true : postedOnly !== 'false',
-    });
   }
 }
