@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { AccountingService } from './accounting.service';
 import { JwtAuthGuard } from '../auth/jwt/jwt-auth.guard';
 import { PermissionsGuard } from '../auth/permissions.guard';
@@ -81,4 +81,55 @@ export class AccountingController {
   clearLock(@CurrentUser() me: CurrentUserType) {
     return this.svc.clearPeriodLock(me.tenantId, me.userId);
   }
+
+  @Get('reports/trial-balance')
+@Permissions('accounting.read')
+trialBalance(
+  @CurrentUser() me: CurrentUserType,
+  @Query('from') from: string,
+  @Query('to') to: string,
+) {
+  return this.svc.trialBalance(me.tenantId, { from, to });
+}
+
+@Get('reports/general-ledger')
+@Permissions('accounting.read')
+generalLedger(
+  @CurrentUser() me: CurrentUserType,
+  @Query('accountCode') accountCode: string,
+  @Query('from') from: string,
+  @Query('to') to: string,
+) {
+  return this.svc.generalLedger(me.tenantId, { accountCode, from, to });
+}
+
+@Get('reports/balance-sheet')
+@Permissions('accounting.read')
+balanceSheet(
+  @CurrentUser() me: CurrentUserType,
+  @Query('asOf') asOf: string,
+) {
+  return this.svc.balanceSheet(me.tenantId, { asOf });
+}
+
+@Get('reports/profit-loss')
+@Permissions('accounting.read')
+profitLoss(
+  @CurrentUser() me: CurrentUserType,
+  @Query('from') from: string,
+  @Query('to') to: string,
+) {
+  return this.svc.profitLoss(me.tenantId, { from, to });
+}
+
+@Post('period-close')
+@Permissions('accounting.write')
+periodClose(
+  @CurrentUser() me: CurrentUserType,
+  @Body() body: { from: string; to: string; retainedEarningsCode?: string; memo?: string },
+) {
+  return this.svc.periodClose(me.tenantId, body);
+}
+
+
 }

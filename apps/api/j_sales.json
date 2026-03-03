@@ -1,0 +1,8 @@
+﻿{
+  "postingDate": "2026-03-01",
+  "description": "Penjualan produk - test",
+  "lines": [
+    { "accountId": "2587a567-cb98-444b-b26a-35158b54249f", "debit": 2000000, "credit": 0 },
+    { "accountId": "d86693f6-43a4-4f56-a1cb-fa64c86272a0", "debit": 0, "credit": 2000000 }
+  ]
+}

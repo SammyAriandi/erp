@@ -1,0 +1,8 @@
+﻿{
+  "postingDate": "2026-03-02",
+  "description": "Beban listrik - test",
+  "lines": [
+    { "accountId": "9f68a4bc-6e4e-417b-b112-17c585a098a8", "debit": 300000, "credit": 0 },
+    { "accountId": "2587a567-cb98-444b-b26a-35158b54249f", "debit": 0, "credit": 300000 }
+  ]
+}

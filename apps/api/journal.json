@@ -1,0 +1,8 @@
+﻿{
+  "postingDate": "2026-01-10",
+  "description": "Modal awal - test",
+  "lines": [
+    { "accountId": "2587a567-cb98-444b-b26a-35158b54249f", "debit": 10000000, "credit": 0 },
+    { "accountId": "73560e5c-61b7-4640-961c-a6340600ba84", "debit": 0, "credit": 10000000 }
+  ]
+}
