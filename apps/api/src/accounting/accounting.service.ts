@@ -942,6 +942,8 @@ const posted = await this.prisma.journalEntry.update({
   data: { status: 'POSTED', postedAt: new Date() },
   include: { lines: true },
 });
+
+return posted;
 }
 
 
