@@ -1,8 +1,16 @@
 ﻿{
-  "postingDate": "2026-01-10",
-  "description": "Modal awal - test",
+  "postingDate": "2026-01-02",
+  "description": "Setoran modal awal",
   "lines": [
-    { "accountId": "2587a567-cb98-444b-b26a-35158b54249f", "debit": 10000000, "credit": 0 },
-    { "accountId": "73560e5c-61b7-4640-961c-a6340600ba84", "debit": 0, "credit": 10000000 }
+    {
+      "accountId": "e069474c-4d63-4b5a-9b33-a50af9552c26",
+      "debit": 10000000,
+      "credit": 0
+    },
+    {
+      "accountId": "92ab959c-5b71-4cdb-a5c8-1f9b4e78e518",
+      "debit": 0,
+      "credit": 10000000
+    }
   ]
 }

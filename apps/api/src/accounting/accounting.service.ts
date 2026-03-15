@@ -723,9 +723,12 @@ async profitLoss(tenantId: string, input: { from: string; to: string }) {
       journal: { 
         status: 'POSTED', 
         postingDate: { gte: fromDate, lte: toDate },
-        NOT: { sourceType: 'PERIOD_CLOSE' },
-      },
-    },
+    OR: [
+      { sourceType: null },
+      { sourceType: { not: 'PERIOD_CLOSE' } },
+    ],
+  },
+},
     _sum: { debit: true, credit: true },
   });
 
@@ -833,10 +836,13 @@ const agg = await this.prisma.journalLine.groupBy({
     tenantId,
     accountId: { in: ids },
     journal: {
-  status: 'POSTED',
-  postingDate: { gte: fromDate, lte: toDate },
-  NOT: { sourceType: 'PERIOD_CLOSE' },
-},
+      status: 'POSTED',
+      postingDate: { gte: fromDate, lte: toDate },
+      OR: [
+        { sourceType: null },
+        { sourceType: { not: 'PERIOD_CLOSE' } },
+      ],
+    },
   },
   _sum: { debit: true, credit: true },
 });
@@ -941,6 +947,25 @@ const posted = await this.prisma.journalEntry.update({
   where: { id: journal.id },
   data: { status: 'POSTED', postedAt: new Date() },
   include: { lines: true },
+});
+
+await this.prisma.periodLock.upsert({
+  where: {
+    tenantId_module: {
+      tenantId,
+      module: 'ACCOUNTING',
+    },
+  },
+  update: {
+    lockUntil: toDate,
+    reason: input.memo ?? `Period close ${input.from}..${input.to}`,
+  },
+  create: {
+    tenantId,
+    module: 'ACCOUNTING',
+    lockUntil: toDate,
+    reason: input.memo ?? `Period close ${input.from}..${input.to}`,
+  },
 });
 
 return posted;

@@ -1,8 +1,16 @@
 ﻿{
-  "postingDate": "2026-03-01",
-  "description": "Penjualan produk - test",
+  "postingDate": "2026-01-03",
+  "description": "Penjualan produk tunai",
   "lines": [
-    { "accountId": "2587a567-cb98-444b-b26a-35158b54249f", "debit": 2000000, "credit": 0 },
-    { "accountId": "d86693f6-43a4-4f56-a1cb-fa64c86272a0", "debit": 0, "credit": 2000000 }
+    {
+      "accountId": "e069474c-4d63-4b5a-9b33-a50af9552c26",
+      "debit": 2000000,
+      "credit": 0
+    },
+    {
+      "accountId": "a80c9572-7625-4dbc-bb53-4f7804f240b5",
+      "debit": 0,
+      "credit": 2000000
+    }
   ]
 }
