@@ -1,0 +1,16 @@
+{
+  "postingDate": "2026-11-30",
+  "description": "Test locked period",
+  "lines": [
+    {
+      "accountId": "e069474c-4d63-4b5a-9b33-a50af9552c26",
+      "debit": 100000,
+      "credit": 0
+    },
+    {
+      "accountId": "a80c9572-7625-4dbc-bb53-4f7804f240b5",
+      "debit": 0,
+      "credit": 100000
+    }
+  ]
+}
